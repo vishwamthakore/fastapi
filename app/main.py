@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from fastapi import Request
+from fastapi import Request, Depends
 from fastapi import Response
 from fastapi import status
 from fastapi.responses import JSONResponse
@@ -7,6 +7,12 @@ from pydantic import BaseModel
 import json
 import psycopg2
 import psycopg2.extras
+from .database import engine, SessionLocal, get_db
+from . import models
+from sqlalchemy.orm import Session
+
+
+models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
@@ -25,14 +31,9 @@ try:
     
     print(con)
 
-    # cur.execute("SELECT * FROM posts;")
-    # t = cur.fetchone()
-    # print(dict(t))
 
 except Exception as e:
     print(f'Exception : {e}')
-
-
 
 class Post(BaseModel):
     title : str
@@ -57,7 +58,13 @@ def get_post_index(id):
     for i,p in enumerate(my_posts):
         if p.get("id") == id:
             return i
-    
+
+@app.get("/test")
+def test(db: Session = Depends(get_db)):
+
+    posts = db.query(models.Post).all()
+    return {"data": posts}
+
 
 @app.get("/")
 async def home():
@@ -65,52 +72,60 @@ async def home():
 
 
 @app.get("/posts")
-async def get_posts():
-    cur.execute("SELECT * FROM POSTS;")
-    posts = cur.fetchall()
+async def get_posts(db: Session = Depends(get_db)):
+
+    posts = db.query(models.Post).all()
     return {"data": posts}
 
 
 @app.post("/posts")
-def create_post(post : Post):
-    cur.execute(f"""INSERT INTO POSTS (TITLE, CONTENT) VALUES ('{post.title}', '{post.content}') returning *""")
-    new_post = cur.fetchone()
-    con.commit()
-    return {"data" : new_post}
+def create_post(post : Post, db: Session = Depends(get_db)):
+
+    post = models.Post(title = post.title, content = post.content)
+    print(post.__dict__)
+    db.add(post)
+    db.commit()
+
+    db.refresh(post)
+    return {"data" : post}
 
 
 @app.get("/posts/{id}")
-def get_post(id : int):
-    cur.execute(f"SELECT * FROM POSTS WHERE ID = {id};")
-    post = cur.fetchone()
+def get_post(id : int, db: Session = Depends(get_db)):
+
+    post = db.query(models.Post).filter(models.Post.id == id).first()
+    print(post)
 
     if post is None:
         return JSONResponse({"message" : "not found"}, 404)        
     else:
         return {"data" : post}
-    
+
 
 @app.delete("/posts/{id}")
-def delete_post(id : int):
-    cur.execute(f"DELETE FROM POSTS WHERE ID = {id} returning *")
-    post = cur.fetchone()
-    con.commit()
-    
-    if post is not None:
-        return JSONResponse({"data" : post}, 204)
+def delete_post(id : int, db: Session = Depends(get_db)):
+
+    post = db.query(models.Post).filter(models.Post.id == id)
+
+    if post.first() is not None:
+        post.delete()
+        db.commit()
+        return JSONResponse({"data" : "deleted"}, 204)
     else:
         return JSONResponse({"message" : "not found"}, 404)
     
 
 @app.put("/posts/{id}")
-def update_post(id : int, post : Post):
+def update_post(id : int, post : Post, db: Session = Depends(get_db)):
 
-    cur.execute(f"""UPDATE POSTS SET title = '{post.title}', content = '{post.content}' WHERE ID = {id} returning *""")
-    post = cur.fetchone()
-    con.commit()
+    curr_post_query = db.query(models.Post).filter(models.Post.id == id)
+    curr_post = curr_post_query.first()
 
-    if post is not None:
-        return JSONResponse({"data" : post}, 200)
+    if curr_post is not None:
+        print(post.model_dump())
+        curr_post_query.update(post.model_dump())
+        db.commit()
+        return {"data" : curr_post_query.first()}
     else:
         return JSONResponse({"message" : "not found"}, 404)
 
